@@ -1,0 +1,1101 @@
+---
+title: "Modeling Events"
+author: "Eugenio Paglino"
+output: html_document
+---
+
+<style type="text/css">
+  .main-container {
+    max-width: 700px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .reveal p {
+    text-align: left;
+    font-size: 0.7em;
+  }
+  .reveal ul {
+    display: block;
+    font-size: 0.7em;
+  }
+  .reveal ol {
+    display: block;
+    font-size: 0.7em;
+  } 
+  .reveal section img {
+    border: none;
+    box-shadow: none; 
+  }
+  
+  .supplementary {
+    background-color: #f5f5f5; /* Light gray */
+    padding: 15px;             /* Gives the text some breathing room */
+    border-left: 4px solid #cccccc; /* Optional: adds a nice left border */
+    border-radius: 5px;        /* Optional: rounds the corners slightly */
+    margin-bottom: 20px;
+  }
+
+</style>
+
+```{r setup, echo=F,include=F}
+knitr::opts_chunk$set(echo = T,
+                      message = F,
+                      warning = F,
+                      fig.align = 'center',
+                      fig.height = 6,
+                      fig.width = 6)
+```
+
+```{r,echo=F,include=F}
+library(here)
+library(data.table)
+
+rm(list=ls())
+
+i_am('R/mortality_modeling.Rmd')
+```
+
+### What Do We Mean by Event?
+
+In these notes we wish to cover selected statistical techniques to model events occurring to individuals over the life course. Examples include events related to family-formation like marriage and separation, fertility, such as birth of first child, mobility, first move out of region or country of birth, health, first diagnosis of hypertension, first time BMI surpasses 30, and finally mortality (though the list is not exhaustive).
+
+Because we deal with individuals and life course events, age is our key dimension. Additionally, because we not only care about differences in the frequency or schedule of events between groups but also about the frequency within each group (the baseline hazard), we will ignore models that only focus on the former (e.g., Cox models).
+
+The practical part will focus on mortality but in principle these techniques can be applied to other outcomes.
+
+### Set Up
+
+Our focus will be on modeling the number of events $D(x)$ that occur to people aged $x$. We consider a number of individuals at risk of experiencing such events $N(x)$, which collectively contribute $E(x)$ person-years of exposure. Because we are dealing with a count variable and because we are expressing the frequency of these events relative to person-years of exposure (thus as rates) rather than number of people exposed (thus as probabilities), the range of distributions we might consider narrows substantially. In practice, we almost always want to choose a Poisson or a Negative Binomial distribution, with the latter being preferred because of the restrictive assumption of equal mean and variance in the Poisson distribution.
+
+Having selected a distribution for the event counts, we can write the basic structure of our model as:
+
+$$
+D(x) \sim \text{Negative Binomial}(\mu(x),\theta)
+$$
+
+where $\mu(x)$, sometimes denoted as $h(x)$, is the hazard rate, and the mean of the distribution and $\theta$ is the overdispersion parameter. In this parametrization, the probability mass function (PMF) of the Negative Binomial distribution is:
+
+$$
+P(Y = y) = \frac{\Gamma(y + \theta)}{y! \, \Gamma(\theta)} \left( \frac{\mu}{\theta + \mu} \right)^y \left( \frac{\theta}{\theta + \mu} \right)^\theta
+$$
+
+and $E[Y]=\mu$ and $Var[Y]=\mu+\mu^2/\theta$. From these equations we can see that $\mu$ is the mean of the distribution and that the overdispersion parameter plays the role of a precision parameter. When $\theta$ is small the variance of the distribution is large and as $\theta$ gets larger the variance convergence to the mean $\mu$, as in the Poisson distribution.
+
+::: {.supplementary}
+**From Negative Binomial to Poisson**
+
+One can show that as $\theta \to \infty$, the pmf of a Negative Binomial distribution converges to that of a Poisson distribution.
+
+Step 1: Set up the limit
+
+We start with the pmf and take the limit as $\theta \to \infty$:
+
+$$
+\lim_{\theta \to \infty} \left[ \frac{\Gamma(y + \theta)}{y! \, \Gamma(\theta)} \left( \frac{\mu}{\theta + \mu} \right)^y \left( \frac{\theta}{\theta + \mu} \right)^\theta \right]
+$$
+
+To make this manageable, let's rearrange the terms into three distinct blocks and evaluate their limits one by one:
+
+$$
+= \frac{\mu^y}{y!} \cdot \lim_{\theta \to \infty} \left[ \frac{\Gamma(y + \theta)}{\Gamma(\theta)(\theta + \mu)^y} \right] \cdot \lim_{\theta \to \infty} \left[ \left( \frac{\theta}{\theta + \mu} \right)^\theta \right]
+$$
+
+Step 2: Evaluate the limit of the Gamma fraction
+
+Let's look at the middle chunk: $\frac{\Gamma(y + \theta)}{\Gamma(\theta)(\theta + \mu)^y}$. Because of the property of Gamma functions (where $\Gamma(n+1) = n\Gamma(n)$), we can expand the numerator:
+
+$$
+\Gamma(y + \theta) = (\theta + y - 1)(\theta + y - 2) \cdots (\theta + 1)\theta \cdot \Gamma(\theta)
+$$
+
+When we divide that by $\Gamma(\theta)$, we are left with exactly $y$ terms:
+
+$$
+\frac{\Gamma(y + \theta)}{\Gamma(\theta)} = \theta(\theta + 1) \cdots (\theta + y - 1)
+$$¨
+
+Now, plug that back into our limit block, dividing by the denominator $(\theta + \mu)^y$. Since both the top and bottom have exactly $y$ terms, we can pair them up:
+
+$$
+\lim_{\theta \to \infty} \left[ \left( \frac{\theta}{\theta + \mu} \right) \left( \frac{\theta + 1}{\theta + \mu} \right) \cdots \left( \frac{\theta + y - 1}{\theta + \mu} \right) \right]
+$$
+
+If we divide the numerator and denominator of each fraction by $\theta$, we get:
+
+$$
+\lim_{\theta \to \infty} \left[ \left( \frac{1}{1 + \mu/\theta} \right) \left( \frac{1 + 1/\theta}{1 + \mu/\theta} \right) \cdots \left( \frac{1 + (y - 1)/\theta}{1 + \mu/\theta} \right) \right]
+$$
+
+As $\theta \to \infty$, every term with $\theta$ in the denominator approaches 0. Therefore, every single fraction in this product simply becomes $\frac{1}{1}$, which is 1. So, this entire middle block evaluates to 1.
+
+Step 3: Evaluate the exponential limit
+
+Now let's look at the final chunk:
+
+$$
+\lim_{\theta \to \infty} \left( \frac{\theta}{\theta + \mu} \right)^\theta
+$$
+
+We can rewrite the fraction by dividing the top and bottom by $\theta$:
+
+$$
+\lim_{\theta \to \infty} \left( \frac{1}{1 + \frac{\mu}{\theta}} \right)^\theta = \frac{1}{\lim_{\theta \to \infty} \left( 1 + \frac{\mu}{\theta} \right)^\theta}
+$$
+
+This denominator is a standard calculus limit definition of the exponential function, $e^x$. Specifically, $\lim_{x \to \infty} (1 + \frac{a}{x})^x = e^a$. Applying that rule, the denominator evaluates to $e^\mu$. Therefore, the limit for this block is:
+
+$$
+\frac{1}{e^\mu} = e^{-\mu}
+$$
+Step 4: Put it all together
+
+Now we substitute our evaluated limits back into the original rearranged equation from Step 1:
+
+$$
+= \frac{\mu^y}{y!} \cdot (1) \cdot \left( e^{-\mu} \right)
+$$
+$$
+= \frac{e^{-\mu} \mu^y}{y!}
+$$
+
+And there we have it! The result is the exact probability mass function of the Poisson distribution.
+
+:::
+
+I love simulations so lets play a bit with our pmf to get an intuition for what the parameters do in this model.
+
+```{r, fig.width=8, fig.height=6}
+# 1. Define the parameters for the simulation
+set.seed(123) # Set a seed for reproducibility
+n_sample <- 100
+
+# Choose 3 means and 3 overdispersion parameters (theta)
+# Notice how theta = 50 acts as our "large" theta (approaching Poisson)
+mus <- c(5, 15, 30)
+thetas <- c(2, 5, 50) 
+
+# 2. Set up the plotting area for a 3x3 grid
+# mfrow fills in the plots row by row
+par(mfrow = c(3, 3), mar = c(4, 4, 3, 1))
+
+# 3. Loop through combinations of mu and theta
+for (mu in mus) {
+  for (theta in thetas) {
+    
+    # Simulate 100 draws from the negative binomial distribution
+    sim_data <- rnbinom(n_sample, size = theta, mu = mu)
+    
+    # Find the maximum value to scale our X-axis properly
+    # We check the 99.9th percentile to ensure we plot the full theoretical tail
+    max_val <- max(max(sim_data), qnbinom(0.999, size = theta, mu = mu))
+    x_vals <- 0:max_val
+    
+    # Calculate the theoretical Probability Mass Function (PMF)
+    theoretical_pmf <- dnbinom(x_vals, size = theta, mu = mu)
+    
+    # 4. Plot the histogram of the simulated sample
+    # We use breaks at half-integers so the bars perfectly center over whole numbers
+    hist(sim_data, 
+         breaks = seq(-0.5, max_val + 0.5, by = 1), 
+         probability = TRUE, 
+         main = bquote(mu == .(mu) ~ "," ~ theta == .(theta)),
+         xlab = "Count (y)", 
+         ylab = "Density / Probability",
+         col = "lightblue", 
+         border = "white")
+    
+    # 5. Overlay the theoretical PMF
+    # type = "l" draws a density line which is not completely correct since
+    # the pmf is actually positive only at integer values
+    lines(x_vals, theoretical_pmf, col = "red", lwd = 2, type = "l")
+    
+    # It would be more accurate to draw the pfm only at integer values
+    #lines(x_vals, theoretical_pmf, col = "red", lwd = 2, type = "h")
+    #points(x_vals, theoretical_pmf, col = "red", pch = 16, cex = 1.2)
+  }
+}
+```
+
+
+```{r, echo=F, fig.width=8, fig.height=6}
+# Reset plotting parameters back to default (1x1)
+par(mfrow = c(1, 1))
+```
+
+Alrighty, now that we have a better sense of how our model looks like, all we need to do is write:
+
+$$
+g(E[D(x)]) = g(\mu(x)) = f(x)
+$$
+
+This might look esoteric, but it's just the classic formulation of a generalized linear model (though here we have not committed to a linear model yet), where $g(\cdot)$ is the link function. Because the mean of a negative binomial distribution must be positive, but the linear predictor may take any value on the real line, the most common choice for the link function is the log (because it maps $[0,\infty) \to \mathbb{R}$).
+
+A more precise notation would be $E[D|X]$, which clarifies that what we are modeling is the conditional expectation of $D$, our outcome variable, given all the covariates (here only age).
+
+So we are looking for a function $f(x)$ that describes how the log hazard varies with age:
+
+$$
+log(\mu(x)) = f(x) + log(E(x))
+$$
+We typically don't care about exposures when modeling, so to avoid keeping track of $log(E(x))$, which anyway just plays the role of an additive constant, we set $E(x)=1$, thus $log(E(x))=0$.
+
+In principle, there is no reason to limit ourselves to linear models (i.e. models in which $f(x)=X\beta$). In practice, however, we typically don't have too many data points with which to fit these models, and linear models are a useful class of simple yet flexible models that work well with relatively little data. For this reason, we will restrict our attention to models where:
+
+$$
+log(\mu(x)) = X\beta
+$$
+
+Note also that although we have a single dependent variable, age, we can still include multiple transformations of age in our model to have a non-linear relationship between age and the hazard (yes, linear models are linear in the $\beta$s, not in the $x_i$s).
+
+### The Gompertz Model
+
+The simplest not obviously wrong model we can fit is:
+
+$$
+log(\mu(x)) = \beta_0 + \beta_1 x
+$$
+
+This is our beloved Gompertz model! It tells us that the log hazard increases linearly with age. Let's see what the model looks like. To make things more fun, let's put some distributional assumptions on $\beta_0$ and $\beta_1$. If you are a frequentist (yes, they are still around), this will be anathema to you, because the model parameters are fixed, but you can equivalently think that we are making distributional statements about our estimators for $\beta_0$ and $\beta_1$. If you are a Bayesian, what we are about to do is called a prior predictive check because we are effectively predicting from the prior distribution.
+
+Some reasonable priors would be:
+
+$$
+\beta_0 \sim \mathcal{N}(-8,1) \\
+\beta_1 \sim \mathcal{N}(0,1)
+$$
+
+```{r}
+# 1. Setup the simulation parameters
+set.seed(42)       # For reproducibility
+n_sims <- 100      # Number of lines to draw
+x <- 0:100         # Age from 0 to 100
+
+# 2. Simulate parameters from the priors
+# beta0 ~ N(-8, 2)
+# beta1 ~ N(0, 1)
+beta0_sim <- rnorm(n_sims, mean = -8, sd = 1)
+beta1_sim <- rnorm(n_sims, mean = 0, sd = 1)
+
+# 3. Plot the Log Hazard
+# The formula is log(mu(x)) = beta0 + beta1 * x
+# We keep a wide y-limit because these values will vary significantly
+plot(NULL, xlim = c(0, 100), ylim = c(-20, 100),
+     xlab = "Age (x)", ylab = expression(log(mu(x))),
+     main = "Prior Predictive Check: Log Hazard",
+     bty = "l")
+
+# Loop through and draw each simulated line in semi-transparent blue
+for(i in 1:n_sims) {
+  log_mu <- beta0_sim[i] + beta1_sim[i] * x
+  lines(x, log_mu, col = rgb(0.2, 0.4, 0.8, alpha = 0.3))
+}
+```
+
+Note that we are already running into some trouble here because log hazard values far above 0 (hazard above 1) are rare and because we also have negative slopes, which is biologically implausible. This also illustrates why non-informative priors, while theoretically appealing, often produce results that don't make sense. Let us refine our priors a bit and see if we get better results:
+
+```{r}
+# 1. Setup the simulation parameters
+set.seed(42)       # For reproducibility
+n_sims <- 100      # Number of lines to draw
+x <- 0:100         # Age from 0 to 100
+
+# 2. Simulate parameters from the priors
+# beta0 ~ N(-8, 2)
+# beta1 ~ N(0, 1)
+beta0_sim <- rnorm(n_sims, mean = -8, sd = 1)
+beta1_sim <- rnorm(n_sims, mean = 0.05, sd = 0.02)
+
+# 3. Plot the Log Hazard
+# The formula is log(mu(x)) = beta0 + beta1 * x
+# We keep a wide y-limit because these values will vary significantly
+plot(NULL, xlim = c(0, 100), ylim = c(-10, 0),
+     xlab = "Age (x)", ylab = expression(log(mu(x))),
+     main = "Prior Predictive Check: Log Hazard",
+     bty = "l")
+
+# Loop through and draw each simulated line in semi-transparent blue
+for(i in 1:n_sims) {
+  log_mu <- beta0_sim[i] + beta1_sim[i] * x
+  lines(x, log_mu, col = rgb(0.2, 0.4, 0.8, alpha = 0.3))
+}
+```
+
+Much better. Of course, to see if these lines actually make sense, we need some real data. Let's load some from the Human Mortality Database.
+
+```{r}
+real_data <- fread(here('data','lt_single_data.txt'))
+real_data[,x:=as.integer(stringr::str_match(age,'\\d+'))]
+real_data <- real_data[x<110]
+```
+
+```{r}
+# 1. Set up the plot base (using the same wide y-limits as before)
+plot(NULL, xlim = c(0, 100), ylim = c(-20, 0),
+     xlab = "Age (x)", ylab = expression(log(mu(x))),
+     main = "Prior Predictive Check vs. Real Data",
+     bty = "l")
+
+# 2. Draw the 100 simulated prior lines
+for(i in 1:length(beta0_sim)) {
+  log_mu <- beta0_sim[i] + beta1_sim[i] * x
+  lines(x, log_mu, col = rgb(0.2, 0.4, 0.8, alpha = 0.3))
+}
+
+# 3. Overlay the real data
+# We must take the log of 'mx' so it matches the log hazard scale of the y-axis
+lines(real_data$x, log(real_data$mx), col = "black", lwd = 3)
+
+# Optional: Add a legend so it's clear what we are looking at
+legend("bottomright", 
+       legend = c("Simulated Priors", "Real Data"), 
+       col = c(rgb(0.2, 0.4, 0.8, alpha = 0.8), "black"), 
+       lwd = c(1, 3), 
+       bty = "n")
+```
+
+Success! Our priors provide a decent approximation to the data. Notice though that to keep things simple we've ignored the additional uncertainty that would come from the negative binomial distribution. To be more rigorous, we should have simulated $D(x)$ from:
+
+$$
+D(x) \sim \text{Negative Binomial}(\mu(x),\theta)
+$$
+
+This only matters for the variance though. Also note that the $\theta$ parameter will also be estimated, so in a fully Bayesian approach we would also account for the uncertainty in estimating the degree of overdispersion. Now that we have real data, we can fit the model using a frequentist approach. First we will focus on rates, and fit a linear model directly to the log rates.
+
+```{r}
+lm_fit <- lm(log(mx) ~ 1 + x,data=real_data)
+summary(lm_fit)
+```
+
+We can visualize the fit.
+
+```{r}
+# 1. Set up the plot with the actual data
+# We use points (pch = 16) with some transparency so overlapping data isn't a solid blob
+plot(real_data$x, log(real_data$mx), 
+     pch = 16, col = rgb(0.2, 0.2, 0.2, alpha = 0.5), 
+     xlab = "Age (x)", ylab = expression(log(mu(x))),
+     main = "Gompertz Model: Actual vs. Fitted Log Rates",
+     bty = "l")
+
+# 2. Add the fitted regression line
+# Since lm_fit is a simple linear model, abline() instantly extracts the 
+# intercept (beta_0) and slope (beta_1) to draw the line.
+abline(lm_fit, col = "red", lwd = 3)
+
+# 3. Add a legend to keep things clear
+legend("topleft", 
+       legend = c("Actual Data (log(mx))", "Fitted Gompertz"), 
+       pch = c(16, NA), 
+       lty = c(NA, 1), 
+       col = c(rgb(0.2, 0.2, 0.2, alpha = 0.5), "red"), 
+       lwd = c(NA, 3), 
+       bty = "n")
+```
+
+We see that the model has a decent fit above age 30 but does not capture well the dynamics at the younger ages. We can try to fit again excluding ages below 30.
+
+```{r}
+lm_fit <- lm(log(mx) ~ 1 + x,data=real_data[x>=30])
+summary(lm_fit)
+
+# 1. Set up the plot with the actual data
+# We use points (pch = 16) with some transparency so overlapping data isn't a solid blob
+plot(real_data[x>=30]$x, log(real_data[x>=30]$mx), 
+     pch = 16, col = rgb(0.2, 0.2, 0.2, alpha = 0.5), 
+     xlab = "Age (x)", ylab = expression(log(mu(x))),
+     main = "Gompertz Model: Actual vs. Fitted Log Rates",
+     bty = "l")
+
+# 2. Add the fitted regression line
+# Since lm_fit is a simple linear model, abline() instantly extracts the 
+# intercept (beta_0) and slope (beta_1) to draw the line.
+abline(lm_fit, col = "red", lwd = 3)
+
+# 3. Add a legend to keep things clear
+legend("topleft", 
+       legend = c("Actual Data (log(mx))", "Fitted Gompertz"), 
+       pch = c(16, NA), 
+       lty = c(NA, 1), 
+       col = c(rgb(0.2, 0.2, 0.2, alpha = 0.5), "red"), 
+       lwd = c(NA, 3), 
+       bty = "n")
+```
+
+
+Not bad for a two-parameter model! Now, if we had actual data on exposures and deaths, we would use it to better capture the uncertainty in the rates. We would fit a negative binomial model first, predict the death counts, and then compute rates and log rates.
+
+```{r,include=F}
+deaths_data <- fread(here('data','deaths_single_data.txt'))
+deaths_data[,c('Dx_female','Dx_male'):=NULL]
+setnames(deaths_data,c('Dx_total'),c('Dx'))
+
+exposures_data <- fread(here('data','exposures_single_data.txt'))
+exposures_data[,c('Ex_female','Ex_male'):=NULL]
+setnames(exposures_data,c('Ex_total'),c('Ex'))
+
+count_data <- merge(deaths_data,exposures_data,by=c('year','age'))
+count_data[,Mx:=Dx/Ex]
+
+count_data[,x:=as.integer(stringr::str_match(age,'\\d+'))] # Is this problematic?
+setorder(count_data,x)
+```
+
+```{r}
+glm_fit <- MASS::glm.nb(Dx ~ 1 + x + offset(log(Ex)),data=count_data[x>=30])
+summary(glm_fit)
+```
+
+Be prepared because it's quite a bit of code. However, you'll see that the logic is quite simple, and general, so once you understand it once you can adapt it for different models.
+
+```{r}
+# Load MASS for mvrnorm (Multivariate Normal) and matrixStats for matrix operations
+library(MASS)
+library(matrixStats)
+
+# Setup the simulation
+set.seed(123)
+n_sims <- 1000
+pred_data <- count_data[x >= 30]
+
+# Extract coefficients, covariance matrix, and theta (overdispersion)
+betas <- coef(glm_fit)
+V <- vcov(glm_fit)
+theta <- glm_fit$theta
+
+# Simulate parameters to capture uncertainty in our estimates
+sim_betas <- mvrnorm(n_sims, mu = betas, Sigma = V)
+
+# Create the model matrix (Intercept and x) and extract the offset
+X_mat <- model.matrix(~ 1 + x, data = pred_data)
+offset_val <- log(pred_data$Ex)
+
+# Calculate all expected log(mu) values in one matrix operation
+# X_mat is (N x K), t(sim_betas) is (K x S) -> log_mu_mat is (N x S)
+log_mu_mat <- X_mat %*% t(sim_betas) + offset_val
+
+# Exponentiate the entire matrix to get the actual expected counts (mu)
+mu_mat <- exp(log_mu_mat)
+
+# Simulate all draws simultaneously
+# rnbinom treats mu_mat as a single long vector (processing column-by-column).
+# length(mu_mat) perfectly equals N * S.
+sim_y_vec <- rnbinom(length(mu_mat), size = theta, mu = mu_mat)
+
+# Reshape the resulting flat vector back into your (N x S) matrix
+sim_y <- matrix(sim_y_vec, nrow = nrow(pred_data), ncol = n_sims)
+
+# Divide each column by exposures to get rates
+sim_rates <- sweep(sim_y, 1, pred_data$Ex, "/")
+
+# Take log to get log rates
+sim_log_rates <- log(sim_rates)
+
+# Calculate intervals (Median, 2.5%, and 97.5%) in a single, C-optimized pass
+pred_data[, c("pred_log_mx_lower", "pred_log_mx_median", "pred_log_mx_upper") := 
+            as.data.table(rowQuantiles(sim_log_rates, probs = c(0.025, 0.5, 0.975)))]
+
+# 4. Plotting
+plot(pred_data$x, log(pred_data$Mx), 
+     pch = 16, col = rgb(0.2, 0.2, 0.2, alpha = 0.5),
+     ylim = c(-10, 2),
+     xlab = "Age (x)", ylab = "Death Counts (D(x))",
+     main = "Posterior Predictive Check: Observed vs Predicted Deaths",
+     bty = "l")
+
+# Add the 95% prediction intervals as dashed lines
+lines(pred_data$x, pred_data$pred_log_mx_lower, col = "red", lwd = 1.5, lty = 2)
+lines(pred_data$x, pred_data$pred_log_mx_upper, col = "red", lwd = 1.5, lty = 2)
+
+# Add the median predicted line
+lines(pred_data$x, pred_data$pred_log_mx_median, col = "red", lwd = 2)
+
+legend("topleft", 
+       legend = c("Observed Counts", "Median Prediction", "95% Prediction Interval"), 
+       pch = c(16, NA, 15), 
+       lty = c(NA, 1, NA), 
+       col = c(rgb(0.2, 0.2, 0.2, alpha = 0.5), "red", rgb(0.8, 0.2, 0.2, alpha = 0.3)), 
+       pt.cex = c(1, 1, 2),
+       bty = "n")
+```
+
+We can wrap the entire process in a function so we can just call it on different models.
+
+```{r}
+source(here('R','utility_functions.R'))
+```
+
+### Gompertz Revisited: Relaxing the Linearity Constraint
+
+To improve the fit, we could add a quadratic term.
+
+```{r}
+glm_fit_quad <- MASS::glm.nb(Dx ~ 1 + x + I(x^2) + offset(log(Ex)), data = count_data[x >= 30])
+
+plot_posterior_predictive(model = glm_fit_quad, 
+                          data = count_data[x >= 30], 
+                          plot_title = "Relaxed Gompertz (Quadratic)")
+```
+
+Then perhaps terms up to order 5.
+
+```{r}
+glm_fit_fifth <- MASS::glm.nb(
+  Dx ~ 1 + x + I(x^2) + I(x^3) + I(x^4) + I(x^5) + offset(log(Ex)), 
+  data = count_data[x >= 30]
+  )
+
+plot_posterior_predictive(model = glm_fit_fifth, 
+                          data = count_data[x >= 30], 
+                          plot_title = "Relaxed Gompertz (5th Order Polynomial)")
+```
+
+Wow! Amazing fit, but what's the catch?
+
+```{r}
+# Define our cutoff for the training data
+max_train_age <- 85
+
+# Subset the data for fitting (Ages 30 to 80)
+train_data <- count_data[x >= 30 & x <= max_train_age]
+
+glm_fit_fifth <- MASS::glm.nb(
+  Dx ~ 1 + x + I(x^2) + I(x^3) + I(x^4) + I(x^5) + offset(log(Ex)), 
+  data = train_data
+  )
+
+plot_posterior_extrapolation(model = glm_fit_fifth, 
+                             full_data = count_data[x >= 30], 
+                             fit_max_age = max_train_age,
+                             plot_title = "Extrapolation: Polynomial Disaster")
+```
+
+Polynomial models always overfit. Solution? Use GAMS!
+
+### Extending Gompertz: Generalized Additive Models
+
+There would be an entire course worth of material here but to use GAMs you don't need to know all the details (of which I can assure you there are many). I think the key idea here is that GAMS are equivalent to polynomial regression (equally flexible), but are less prone to overfitting, automatically identify the required complexity (so they can choose between higher order and lower order models for you), and can be (not always easily) extended to tackle more complicated problems (like cases in which the outcome is a smooth function of a two-dimensional predictor, like age and time).
+
+Let's experiment.
+
+```{r}
+library(mgcv)
+
+# Assuming train_data is still restricted to ages 30 to 80
+# fit a GAM with a Negative Binomial distribution
+gam_fit <- gam(Dx ~ s(x) + offset(log(Ex)), 
+                 family = nb(), 
+                 data = train_data)
+
+plot_gam_extrapolation(model = gam_fit, 
+                       full_data = count_data[x >= 30], 
+                       fit_max_age = max_train_age,
+                       plot_title = "Extrapolation: GAM (Penalized Splines)")
+```
+
+Wow, excellent fit and decent extrapolation! That's almost magic. One issue that might make GAMs inappropropriate for a particular problem, is that they might oversmooth. For example, here is what happens if we bring back the entire age range:
+
+```{r}
+# Subset the data for fitting (Ages 30 to 80)
+train_data <- count_data[x <= max_train_age]
+
+# fit a GAM with a Negative Binomial distribution
+gam_fit_all_ages <- gam(Dx ~ s(x) + offset(log(Ex)), 
+                 family = nb(), 
+                 data = train_data)
+
+plot_gam_extrapolation(model = gam_fit_all_ages, 
+                       full_data = count_data, 
+                       fit_max_age = max_train_age,
+                       plot_title = "Extrapolation: GAM (Penalized Splines)")
+```
+
+We start seeing that the model underfits at younger ages and overfits and older ages. Additionally, GAMs can be sensitive to what happens at the extreme ages, when extrapolation is required. For example, if we lower the last age-specific rates seen by the model, here is what we get.
+
+```{r}
+# Subset the data for fitting (Ages 30 to 80)
+train_data <- count_data[x <= max_train_age]
+train_data[x %between% c(80,85), Dx:=Dx*(1+0.05*(80-x))]
+
+# fit a GAM with a Negative Binomial distribution
+gam_fit_all_ages <- gam(Dx ~ s(x) + offset(log(Ex)), 
+                 family = nb(), 
+                 data = train_data)
+
+modified_data <- copy(count_data)[x %between% c(80,85), Dx:=Dx*(1+0.05*(80-x))]
+modified_data[x %between% c(80,85), Mx:=Mx*(1+0.05*(80-x))]
+
+plot_gam_extrapolation(model = gam_fit_all_ages, 
+                       full_data = modified_data, 
+                       fit_max_age = max_train_age,
+                       plot_title = "Extrapolation: GAM (Penalized Splines)")
+```
+
+### The Brass Relational Model
+
+What can we do in these cases, and when a linear model is not adequate? Our favorite Scottish demographer comes to the rescue! Brass relational models express the very simple assumption that the mortality of our population follows the same overall age schedule of a standard population with only differences in the level and the rate of increase allowed. As you can guess, these are pretty rigid models, whose goodness of fit depends on the choice of the standard. Let's see an example:
+
+```{r}
+standard_lt <- fread(here('data','lt_single_standard.txt'))
+standard_lt[,x:=as.integer(stringr::str_match(age,'\\d+'))]
+standard_lt <- standard_lt[,.(x,mx_std=mx)] # Not very data.table
+standard_lt[,log_mx_std:=log(mx_std)]
+
+count_data <- merge(count_data,standard_lt,by=c('x'),all.x=T,)
+
+glm_fit_brass <- MASS::glm.nb(
+  Dx ~ 1 + log_mx_std + offset(log(Ex)), 
+  data = count_data
+  )
+
+plot_posterior_predictive(model = glm_fit_brass, 
+                          data = count_data, 
+                          plot_title = "Our First Brass Relational Model")
+```
+
+This is not bad at all! In fact, it is better than the GAM for young ages. However, we can see that the model cannot capture deviations from the standard age schedule, so the higher-than-standard mortality in early adulthood is ignored by the model. What about extrapolation?
+
+```{r}
+# Define our cutoff for the training data
+max_train_age <- 85
+
+# Subset the data for fitting (below age 80)
+train_data <- count_data[x <= max_train_age]
+
+glm_fit_brass <- MASS::glm.nb(
+  Dx ~ 1 + log_mx_std + offset(log(Ex)), 
+  data = train_data
+  )
+
+plot_posterior_extrapolation(model = glm_fit_brass, 
+                             full_data = count_data, 
+                             fit_max_age = max_train_age,
+                             plot_title = "Extrapolation: Brass Strikes Back")
+```
+
+Pretty good as well! The key advantage of Brass (and to some extent Gompertz if we just care about older ages) is that they are almost guaranteed to give life tables that are, if not correct, demographically plausible. In other words, you will never get a life expectancy of 100 if you fit a Brass model.
+
+But what if that poor fit in early adulthood is bugging us?
+
+[INSERT YOUR GUESS HERE]
+
+One solution is to pick a better standard. This is definitely an option if you are just fitting models for a couple of groups. The search can also be automated as long as you select a metric that should be optimized. This solution is (of course) already mentioned in Manual X. A natural starting point would be to look within model life tables, but you could also use HMD life tables, or some other source you trust. There is of course a degree of arbitrariness here because you can probably find two standards that fit the data equally well but provide different extrapolations. It is thus a good idea to experiment a bit and run some sensitivity checks. Some complications arise here when in comes to quantify uncertainty.
+
+### Brass Meets GAMs: The Generalized Additive Relational Model
+
+Here is one more strategy we could explore. What if we could combine the rigidity of Brass (good to get reasonable estimates) with the flexibility of GAMS (good to improve fit)? The GAM relational model is born! This is not a new idea in demography. In fact, this is very close in spirit to the TOPALS models, but when the TOPALS paper was written GAMs were not as developed as they are today.
+
+Time to see if it works!
+
+```{r}
+# Subset the data for fitting (Ages 30 to 80)
+train_data <- count_data[x <= max_train_age]
+
+# fit a GAM with a Negative Binomial distribution
+gam_fit_brass <- gam(Dx ~ 1 + log_mx_std + s(x) + offset(log(Ex)), 
+                 family = nb(), 
+                 data = train_data)
+
+plot_gam_extrapolation(model = gam_fit_brass, 
+                       full_data = count_data, 
+                       fit_max_age = max_train_age,
+                       plot_title = "Extrapolation: Relational GAM")
+```
+
+WTF! Perfect fit at the observed ages and decent extrapolation at the oldest ages? This is madness! What's the catch? There are two in my experience. First, when the data is messy and the standard is not a good fit, the model might completely ignore the standard (i.e. give it a coefficient close to zero) and just fit the data with the smooth part. This is bad because it brings back all the issues with GAMs without the standard. The conceptual issue here is that the smooth term and the standard are competing to explain the same variation (i.e. the model is overparametrized). Second, even when the standard is not ignored, these models are sensitive to what happens at the extreme ages (because of the smooth component).
+
+Here is an example of the second issue.
+
+```{r}
+# Subset the data for fitting (Ages 30 to 80)
+train_data <- count_data[x <= max_train_age]
+train_data[x %between% c(80,85), Dx:=Dx*(1+0.05*(80-x))]
+
+# fit a GAM with a Negative Binomial distribution
+gam_fit_brass <- gam(Dx ~ log_mx_std + s(x) + offset(log(Ex)), 
+                 family = nb(), 
+                 data = train_data)
+
+modified_data <- copy(count_data)[x %between% c(80,85), Dx:=Dx*(1+0.05*(80-x))]
+modified_data[x %between% c(80,85), Mx:=Mx*(1+0.05*(80-x))]
+
+plot_gam_extrapolation(model = gam_fit_brass, 
+                       full_data = modified_data, 
+                       fit_max_age = max_train_age,
+                       plot_title = "Extrapolation: Relational GAM")
+```
+
+If you are just fitting a couple of models, you can of course apply some ad-hoc tweaks. For example, you might restrict the age range on which the model is fit, you can decrease the maximum degrees of freedom for the smooth component, or you could implement a two-step procedure in which you first fit a Brass model and then fit a GAM on the residuals. However, you should be aware that what works for a particular population might not work for another one, and in my experience when you just look at the problematic fits and try to fix them you often end up causing poor fit in other populations.
+
+### The Bayesian Rabbit Hole: Enter at Your Own Peril!
+
+::: {style="text-align: right;"}
+> *"Per me si va nella città dolente, \
+> per me si va nell'etterno dolore, \
+> per me si va tra la perduta gente."*
+>
+> — Dante, *Inferno*
+:::
+
+::: {.supplementary}
+**Mirror, mirror on the wall, which is the best model of all? The Bayesian Relational Flexible Model of course (just joking)**
+
+An even more flexible alternative (in some sense) is to go Bayesian and replace splines with age-specific parameters with a second-order random walk prior.
+
+Let $x \in \{1, 2, \dots, N\}$ index the respective age groups, $D_x$ represent the observed death counts, and $E_x$ represent the corresponding exposures. We again assume the death counts follow a Negative Binomial distribution to account for overdispersion:
+
+$$D_x \sim \text{NegativeBinomial}(\mu_x, \theta)$$
+
+Where $\mu_x$ is the expected number of deaths and $\theta$ is the overdispersion parameter. The expected death counts are modeled on the log scale, incorporating the log-exposure as an offset:
+
+$$\log(\mu_x) = \alpha + \beta \log(M_x^{std}) + \gamma_x + \log(E_x)$$
+
+The age-specific effects $\gamma_x$ follow a Random Walk of order 2 (RW2). We place diffuse priors on the first two ages to anchor the walk, and the subsequent ages depend on the trajectory of the previous two:
+
+$$\gamma_1 \sim \mathcal{N}(0, 10^2)$$
+$$\gamma_2 \sim \mathcal{N}(0, 10^2)$$
+$$\gamma_x \sim \mathcal{N}(2\gamma_{x-1} - \gamma_{x-2}, \sigma_\gamma^2) \quad \text{for } x = 3, \dots, N$$
+
+Note that the prior above expresses that belief that the slope of the age-mortality curve varies smoothly, and can also be written as:
+
+$$(\gamma_x - \gamma_{x-1}) - (\gamma_{x-1} - \gamma_{x-2}) \sim \mathcal{N}(0, \sigma^2_\gamma)$$
+
+To ensure the intercept $\alpha$ remains identifiable from the overall level of the $\gamma_x$ effects, a soft sum-to-zero constraint is applied to the age terms:
+
+$$\sum_{x=1}^{N} \gamma_x \sim \mathcal{N}(0, (0.001 \cdot N)^2)$$
+
+Finally, we specify the priors for the baseline intercept, the relational model slope, the overdispersion parameter, and the standard deviation of the RW2 process (which acts as the smoothing penalty):
+
+$$\alpha \sim \mathcal{N}(-5, 5^2)$$
+$$\beta \sim \mathcal{N}(1, 1)$$
+
+$$\theta \sim \text{Exponential}(0.1)$$
+$$\sigma_\gamma \sim \text{Half-}\mathcal{N}(0, 0.5^2)$$
+
+I won't go into any details here but there are two nice thing about the Bayesian approach here. First, we can account for the uncertainty in all the parameters, including overdispersion, which is instead ignored in the frequentist approach. Second, we can tweak the priors so say, for example, that mortality cannot decline with age (or to strongly penalize parameter configurations in which mortality declines with age). Here is the code to fit the basic model above.
+
+```{r,echo=F,message=F,warning=F}
+# Load required packages
+library(cmdstanr)
+# Optional: Tell cmdstanr where your CmdStan installation is if it doesn't find it automatically
+set_cmdstan_path("C:/rlibs/4.5.2/cmdstan-2.38.0")
+library(matrixStats)
+
+# 1. Prepare the data list for Stan
+stan_data <- list(
+  N = nrow(count_data),
+  D = as.integer(count_data$Dx),
+  log_E = log(count_data$Ex),
+  log_std = count_data$log_mx_std
+)
+
+# 2. Compile and Fit the model
+mod <- cmdstan_model(here('R','relational_rw2.stan'),dir ="C:/rlibs/4.5.2/cmdstanr/models")
+fit <- mod$sample(
+  data = stan_data, 
+  iter_warmup = 1000, 
+  iter_sampling = 1000, 
+  chains = 4, 
+  parallel_chains = 4, # Native parallelization
+  seed = 2026,
+  refresh = 500
+)
+
+# 3. Inspect the global parameters
+# We specify the pars argument so it doesn't print all 100+ age effects!
+#print(fit, pars = c("alpha", "beta", "sigma_gamma", "theta"))
+```
+
+Here are some additional code blocks to look at diagnostics. This is not optional!
+
+```{r,echo=F,message=F,warning=F}
+# install.packages(c("bayesplot", "posterior"))
+library(bayesplot)
+library(posterior)
+
+# Set a nice bayesplot theme
+color_scheme_set("mix-blue-purple")
+```
+
+```{r,echo=F,message=F,warning=F}
+# 1. Run the automated CmdStan diagnostic report
+cat("--- CmdStan HMC Diagnostics ---\n")
+fit$cmdstan_diagnose()
+
+# 2. View R-hat and Effective Sample Size (ESS) for core parameters
+# We use the $summary() method powered by the 'posterior' package
+cat("\n--- Parameter Summary (R-hat and ESS) ---\n")
+diagnostic_summary <- fit$summary(
+  variables = c("alpha", "beta", "theta", "sigma_gamma"),
+  "mean", "sd", "rhat", "ess_bulk", "ess_tail"
+)
+
+diagnostic_summary
+```
+
+```{r,echo=F,message=F,warning=F}
+library(ggplot2)
+# Select the key parameters we want to diagnose to avoid cluttering the plot
+params_to_plot <- c('alpha',"beta", "theta", "sigma_gamma")
+
+# Extract the draws array for these specific parameters
+draws_array <- fit$draws(variables = params_to_plot)
+
+# Generate the Rank Overlay (Trank) Plot
+p_trank <- mcmc_rank_overlay(draws_array) +
+  labs(
+    title = "Rank Trace Plots (Trank Plots)",
+    subtitle = "Well-mixing chains should look like overlapping, uniform horizontal bands."
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 14))
+
+print(p_trank)
+```
+
+```{r,echo=F,message=F,warning=F}
+# 1. Extract the full diagnostic summary for ALL parameters
+# We exclude the 'lp__' (log-probability) parameter as its ESS is naturally 
+# lower and it isn't a model parameter we need to interpret.
+all_diags <- fit$summary()
+all_diags <- all_diags[all_diags$variable != "lp__", ]
+
+# 2. Create a "Status" column to automatically flag bad parameters
+# Thresholds: R-hat should be < 1.05 (ideally < 1.01) and ESS > 400
+all_diags$Status <- ifelse(all_diags$rhat > 1.05 | all_diags$ess_bulk < 400, 
+                           "Review Needed", "Healthy")
+
+# 3. Build the McElreath-style Scatter Plot
+p_mcelreath <- ggplot(all_diags, aes(x = ess_bulk, y = rhat, color = Status)) +
+  # Add the points with a bit of transparency to handle overlapping group effects
+  geom_point(alpha = 0.7, size = 2.5) +
+  
+  # Add the threshold lines (The "Fences")
+  geom_hline(yintercept = 1.05, linetype = "dashed", color = "darkred", linewidth = 1) +
+  geom_vline(xintercept = 400, linetype = "dashed", color = "darkred", linewidth = 1) +
+  
+  # Add text labels strictly for the points that fail the checks
+  geom_text(data = all_diags[all_diags$Status == "Review Needed", ], 
+            aes(label = variable), 
+            vjust = -1, size = 3, show.legend = FALSE) +
+  
+  # Styling
+  scale_color_manual(values = c("Healthy" = "#1F78B4", "Review Needed" = "#E31A1C")) +
+  labs(
+    title = "Global MCMC Health: R-hat vs. Effective Sample Size",
+    subtitle = "Safe zone is the bottom-right quadrant (High ESS, Low R-hat).",
+    x = "Effective Sample Size (ess_bulk)",
+    y = "R-hat (Convergence)"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold", size = 14)
+  )
+
+print(p_mcelreath)
+```
+
+```{r,echo=F,message=F,warning=F}
+# 3. Build the McElreath-style Scatter Plot
+p_mcelreath <- ggplot(all_diags[all_diags$Status=='Review Needed',], aes(x = ess_bulk, y = rhat, color = Status)) +
+  # Add the points with a bit of transparency to handle overlapping group effects
+  geom_point(alpha = 0.7, size = 2.5) +
+  
+  # Add text labels strictly for the points that fail the checks
+  geom_text(data = all_diags[all_diags$Status == "Review Needed", ], 
+            aes(label = variable), 
+            vjust = -1, size = 3, show.legend = FALSE) +
+  
+  # Styling
+  scale_color_manual(values = c("Healthy" = "#1F78B4", "Review Needed" = "#E31A1C")) +
+  labs(
+    title = "Global MCMC Health: R-hat vs. Effective Sample Size",
+    subtitle = "Safe zone is the bottom-right quadrant (High ESS, Low R-hat).",
+    x = "Effective Sample Size (ess_bulk)",
+    y = "R-hat (Convergence)"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold", size = 14)
+  )
+
+print(p_mcelreath)
+```
+
+Finally here we construct the plot of observed agains modeled rates.
+
+```{r,echo=F,message=F,warning=F}
+# 1. Extract the expected log counts (log_mu) directly as a matrix
+log_mu_draws <- fit$draws(variables = "log_mu", format = "matrix")
+
+# 2. Convert from log expected counts to predicted log rates
+# We subtract the log exposures from the log counts
+predicted_log_rates <- sweep(log_mu_draws, 2, log(count_data$Ex), "-")
+
+# 3. Calculate the median and 95% credible intervals
+# colQuantiles computes the bounds for our log rates directly
+count_data[, c("log_rate_lower", "log_rate_median", "log_rate_upper") := 
+            as.data.table(colQuantiles(predicted_log_rates, probs = c(0.025, 0.5, 0.975)))]
+
+# 4. Plot the final fit on the log rate scale
+# Calculate y-limits based on the log rates
+y_limits <- range(c(log(count_data$Mx), count_data$log_rate_lower, count_data$log_rate_upper), na.rm = TRUE)
+
+plot(count_data$x, log(count_data$Mx), 
+     pch = 16, col = rgb(0.2, 0.2, 0.2, alpha = 0.5), 
+     ylim = y_limits,
+     xlab = "Age (x)", ylab = expression(log(m[x])),
+     main = "Observed vs Predicted Log Rates (Estonia 1960)",
+     bty = "l")
+
+# Add the 95% Credible Intervals as dashed lines
+lines(count_data$x, count_data$log_rate_lower, col = "red", lwd = 1.5, lty = 2)
+lines(count_data$x, count_data$log_rate_upper, col = "red", lwd = 1.5, lty = 2)
+
+# Add the Median Predicted Line
+lines(count_data$x, count_data$log_rate_median, col = "red", lwd = 2)
+
+# Add a legend
+legend("topleft", 
+       legend = c("Observed Log Rates", "Median Prediction", "95% Credible Interval"), 
+       pch = c(16, NA, NA), 
+       lty = c(NA, 1, 2), 
+       col = c(rgb(0.2, 0.2, 0.2, alpha = 0.5), "red", "red"), 
+       lwd = c(NA, 2, 1.5),
+       bty = "n")
+```
+
+We can also check extrapolation, though we need to write the model slightly differently.
+
+```{r,echo=F,message=F,warning=F}
+# 1. Define the training cutoff
+max_train_age <- 80
+
+# 2. Prepare the data list for Stan
+# We assume count_data contains all ages, sorted by age
+stan_data_extrap <- list(
+  N_train = nrow(count_data[x <= max_train_age]),
+  N_total = nrow(count_data),
+  D_train = as.integer(count_data[x <= max_train_age]$Dx), # Only deaths up to age 80
+  log_E = log(count_data$Ex),                              # Exposures for all ages
+  log_std = count_data$log_mx_std                         # Standard for all ages
+)
+
+# 3. Compile and Fit
+mod_extrap <- cmdstan_model(here('R','relational_rw2_extrap.stan'),dir ="C:/rlibs/4.5.2/cmdstanr/models")
+
+fit_extrap <- mod_extrap$sample(
+  data = stan_data_extrap,
+  seed = 42,
+  chains = 4,
+  parallel_chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 1000,
+  adapt_delta = 0.95
+)
+
+# 4. Extract and calculate log rates
+log_mu_draws <- fit_extrap$draws("log_mu", format = "matrix")
+predicted_log_rates <- sweep(log_mu_draws, 2, log(count_data$Ex), "-")
+
+count_data[, c("log_rate_lower", "log_rate_median", "log_rate_upper") := 
+            as.data.table(colQuantiles(predicted_log_rates, probs = c(0.025, 0.5, 0.975)))]
+
+# 5. Plotting the Extrapolation
+y_limits <- range(c(log(count_data$Mx), count_data$log_rate_lower, count_data$log_rate_upper), na.rm = TRUE)
+
+plot(count_data$x, log(count_data$Mx), 
+     pch = 16, col = rgb(0.2, 0.2, 0.2, alpha = 0.5), 
+     ylim = y_limits,
+     xlab = "Age (x)", ylab = expression(log(m[x])),
+     main = "Bayesian Relational RW2: Extrapolation Beyond Age 80",
+     bty = "l")
+
+# Add the vertical line showing where data ends
+abline(v = max_train_age, col = "blue", lty = 3, lwd = 2)
+
+# Add the credible intervals and median line
+lines(count_data$x, count_data$log_rate_lower, col = "red", lwd = 1.5, lty = 2)
+lines(count_data$x, count_data$log_rate_upper, col = "red", lwd = 1.5, lty = 2)
+lines(count_data$x, count_data$log_rate_median, col = "red", lwd = 2)
+
+legend("topleft", 
+       legend = c("Observed Data", "Median Prediction", "95% Credible Interval", "End of Training Data"), 
+       pch = c(16, NA, NA, NA), 
+       lty = c(NA, 1, 2, 3), 
+       col = c(rgb(0.2, 0.2, 0.2, alpha = 0.5), "red", "red", "blue"), 
+       lwd = c(NA, 2, 1.5, 2),
+       bty = "n")
+```
+
+Finally, we can try a version in which parameter configurations that lead to declining mortality are penalized. This does not work too well if we look at the diagnostics, although this has more to do with the way Hamiltonian Monte Carlo works than with how the model is written. I am sure it can be fixes with some clever Stan coding but that's above my skill level at the moment.
+
+```{r,echo=F,message=F,warning=F}
+# 1. Define the training cutoff
+max_train_age <- 80
+
+# 2. Prepare the data list for Stan
+# We assume count_data contains all ages, sorted by age
+stan_data_mono_extrap <- list(
+  N_train = nrow(count_data[x <= max_train_age]),
+  N_total = nrow(count_data),
+  D_train = as.integer(count_data[x <= max_train_age]$Dx), # Only deaths up to age 80
+  log_E = log(count_data$Ex),                              # Exposures for all ages
+  log_std = count_data$log_mx_std,                         # Standard for all ages,
+  mono_start_idx = max_train_age + 1
+)
+
+# 3. Compile and Fit
+mod_mono_extrap <- cmdstan_model(here('R','relational_rw2_mono_extrap.stan'),dir ="C:/rlibs/4.5.2/cmdstanr/models")
+
+fit_mono_extrap <- mod_mono_extrap$sample(
+  data = stan_data_mono_extrap,
+  seed = 42,
+  chains = 4,
+  parallel_chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 1000,
+  adapt_delta = 0.95
+)
+
+# Summary
+fit_mono_extrap$summary(variables = c('alpha','beta','sigma_gamma','theta'))
+
+# 4. Extract and calculate log rates
+log_mu_draws <- fit_mono_extrap$draws("log_mu", format = "matrix")
+predicted_log_rates <- sweep(log_mu_draws, 2, log(count_data$Ex), "-")
+
+count_data[, c("log_rate_lower", "log_rate_median", "log_rate_upper") := 
+            as.data.table(colQuantiles(predicted_log_rates, probs = c(0.025, 0.5, 0.975)))]
+
+# 5. Plotting the Extrapolation
+y_limits <- range(c(log(count_data$Mx), count_data$log_rate_lower, count_data$log_rate_upper), na.rm = TRUE)
+
+plot(count_data$x, log(count_data$Mx), 
+     pch = 16, col = rgb(0.2, 0.2, 0.2, alpha = 0.5), 
+     ylim = y_limits,
+     xlab = "Age (x)", ylab = expression(log(m[x])),
+     main = "Bayesian Relational RW2: Extrapolation Beyond Age 80",
+     bty = "l")
+
+# Add the vertical line showing where data ends
+abline(v = max_train_age, col = "blue", lty = 3, lwd = 2)
+
+# Add the credible intervals and median line
+lines(count_data$x, count_data$log_rate_lower, col = "red", lwd = 1.5, lty = 2)
+lines(count_data$x, count_data$log_rate_upper, col = "red", lwd = 1.5, lty = 2)
+lines(count_data$x, count_data$log_rate_median, col = "red", lwd = 2)
+
+legend("topleft", 
+       legend = c("Observed Data", "Median Prediction", "95% Credible Interval", "End of Training Data"), 
+       pch = c(16, NA, NA, NA), 
+       lty = c(NA, 1, 2, 3), 
+       col = c(rgb(0.2, 0.2, 0.2, alpha = 0.5), "red", "red", "blue"), 
+       lwd = c(NA, 2, 1.5, 2),
+       bty = "n")
+```
+
+:::
+
+
